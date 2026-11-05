@@ -34,20 +34,16 @@ ROOM_POST_URL = "https://room.rakuten.co.jp/mix?itemcode={code}"
 
 # ---------------------------------------------------------------- API
 def search_items(keyword: str, filters: dict, app_id: str, api_url: str = DEFAULT_API,
-                 access_key: str | None = None, hits: int = 30) -> list[dict]:
-    params = {
-        "applicationId": app_id,
-        "keyword": keyword,
-        "hits": hits,
-        "sort": "-reviewCount",
-        "availability": 1,
-        "formatVersion": 2,
-        "format": "json",
-    }
-    if filters.get("min_price"):
-        params["minPrice"] = filters["min_price"]
-    if filters.get("max_price"):
-        params["maxPrice"] = filters["max_price"]
+                 access_key: str | None = None, hits: int = 30, item_code: str | None = None) -> list[dict]:
+    params = {"applicationId": app_id, "formatVersion": 2, "format": "json"}
+    if item_code:  # 商品コードで1件だけ取り直す（紹介文の作り直し用）
+        params.update({"itemCode": item_code, "hits": 1})
+    else:
+        params.update({"keyword": keyword, "hits": hits, "sort": "-reviewCount", "availability": 1})
+        if filters.get("min_price"):
+            params["minPrice"] = filters["min_price"]
+        if filters.get("max_price"):
+            params["maxPrice"] = filters["max_price"]
     if access_key:
         params["accessKey"] = access_key
     url = f"{api_url}?{urllib.parse.urlencode(params)}"
@@ -238,6 +234,35 @@ def write_outputs(queue: list[dict], out_dir: Path, today: dt.date) -> tuple[Pat
     return md, cs
 
 
+def read_csv_queue(path: Path) -> list[dict]:
+    with path.open(encoding="utf-8-sig", newline="") as fp:
+        rows = [r for r in csv.DictReader(fp) if r.get("item_code")]
+    for r in rows:  # CSV は文字列なので、数値の列を戻す
+        r["price"] = int(float(r.get("price") or 0))
+        r["review_average"] = float(r.get("review_average") or 0)
+        r["review_count"] = int(float(r.get("review_count") or 0))
+        r["point_rate"] = int(float(r.get("point_rate") or 1))
+        r.setdefault("note", "")
+    return rows
+
+
+def retext_queue(queue: list[dict], fetch_one, season_label: str | None) -> int:
+    """商品はそのままに、紹介文だけを今の書き方で作り直す。作り直せた件数を返す。"""
+    done = 0
+    for q in queue:
+        try:
+            items = fetch_one(q["item_code"])
+        except Exception as e:
+            print(f"[warn] {q['item_code']}: {describe(e)}", file=sys.stderr)
+            items = []
+        it = items[0] if items else {
+            "itemName": q["name"], "reviewAverage": q["review_average"],
+            "reviewCount": q["review_count"], "pointRate": q["point_rate"]}
+        q["text"] = draft_text(it, "", season_label)
+        done += bool(items)
+    return done
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="楽天ROOMの投稿キューを作る")
     p.add_argument("--config", default=str(HERE / "config.json"))
@@ -245,6 +270,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--seen", default=str(HERE / "data" / "seen.txt"),
                    help="一度キューに入れた商品コードの記録（重複防止）")
     p.add_argument("--date", help="YYYY-MM-DD（季節テーマの確認用）")
+    p.add_argument("--retext", action="store_true",
+                   help="その日のリストの商品はそのままに、紹介文だけ作り直す")
     args = p.parse_args(argv)
 
     app_id = os.environ.get("RAKUTEN_APP_ID")
@@ -263,6 +290,23 @@ def main(argv: list[str] | None = None) -> int:
     today = dt.date.fromisoformat(args.date) if args.date else dt.date.today()
     seen_path = Path(args.seen)
     seen = set(seen_path.read_text().split()) if seen_path.exists() else set()
+
+    if args.retext:
+        path = Path(args.out) / f"{today.isoformat()}.csv"
+        if not path.exists():
+            print(f"{path} がありません", file=sys.stderr)
+            return 2
+        queue = read_csv_queue(path)
+        season = config.get("seasonal", {}).get(str(today.month))
+
+        def fetch_one(code: str) -> list[dict]:
+            time.sleep(1.1)
+            return search_items("", {}, app_id, api_url, access_key, item_code=code)
+
+        n = retext_queue(queue, fetch_one, season["label"] if season else None)
+        md, cs = write_outputs(queue, Path(args.out), today)
+        print(f"紹介文を作り直しました（楽天から取り直せた商品 {n}/{len(queue)}件）→ {md}")
+        return 0
 
     def fetch(kw: str) -> list[dict]:
         time.sleep(1.1)  # API の目安（1秒に1回）を守る
