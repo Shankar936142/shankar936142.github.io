@@ -35,7 +35,7 @@ jobs:
             if [ "${{ github.event_name }}" = "schedule" ]; then
               echo "skip=true" >> "$GITHUB_OUTPUT"        # 予備の予約実行は何もしない
             elif [ "${{ inputs.regenerate }}" != "true" ]; then
-              echo "keep=true" >> "$GITHUB_OUTPUT"        # 手動実行：リストはそのまま、ページだけ作る
+              echo "keep=true" >> "$GITHUB_OUTPUT"        # 手動実行：商品はそのまま、紹介文とページを作り直す
             fi
           fi
       - uses: actions/setup-python@v6
@@ -55,6 +55,15 @@ jobs:
           RAKUTEN_REFERER: ${{ vars.RAKUTEN_REFERER || 'https://miyamoto477-dev.github.io/' }}
           TZ: Asia/Tokyo
         run: python rakuten_room/room_queue.py
+      - name: 紹介文を作り直す（商品はそのまま）
+        if: steps.check.outputs.keep == 'true'
+        env:
+          RAKUTEN_APP_ID: ${{ secrets.RAKUTEN_APP_ID }}
+          RAKUTEN_ACCESS_KEY: ${{ secrets.RAKUTEN_ACCESS_KEY }}
+          RAKUTEN_API_URL: ${{ vars.RAKUTEN_API_URL }}
+          RAKUTEN_REFERER: ${{ vars.RAKUTEN_REFERER || 'https://miyamoto477-dev.github.io/' }}
+          TZ: Asia/Tokyo
+        run: python rakuten_room/room_queue.py --retext
       - name: ボタン付きページを作る
         if: steps.check.outputs.skip != 'true'
         run: python rakuten_room/page.py --out room  # /room/ に置くと GitHub Pages で公開される

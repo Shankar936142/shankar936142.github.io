@@ -100,6 +100,30 @@ class RealDataTest(unittest.TestCase):
         self.assertEqual(q[0]["item_url"], "https://item.rakuten.co.jp/a/b/?rafcid=wsc_xpk_y")
 
 
+class RetextTest(unittest.TestCase):
+    def test_retext_keeps_items_and_rewrites_text(self):
+        q = rq.build_queue(CONFIG, lambda kw: [item("s:" + kw, name=kw)], dt.date(2026, 11, 5), set())
+        with tempfile.TemporaryDirectory() as d:
+            rq.write_outputs(q, Path(d), dt.date(2026, 11, 5))
+            rows = rq.read_csv_queue(Path(d) / "2026-11-05.csv")
+            codes = [r["item_code"] for r in rows]
+
+            def fetch_one(code):
+                if code == codes[0]:
+                    raise OSError("down")  # 取り直せない商品は手元の情報で作る
+                return [dict(item(code, name="【楽天1位】新しい商品名"),
+                             itemCaption="毎日使いやすいコンパクトなサイズです")]
+
+            n = rq.retext_queue(rows, fetch_one, "乾燥対策")
+            self.assertEqual(n, len(rows) - 1)
+            self.assertEqual([r["item_code"] for r in rows], codes)  # 商品は変わらない
+            self.assertTrue(all("こんな人に" not in r["text"] for r in rows))
+            self.assertIn("✔ 毎日使いやすいコンパクトなサイズです", rows[1]["text"])
+            self.assertTrue(rows[1]["text"].startswith("新しい商品名"))
+            md, _ = rq.write_outputs(rows, Path(d), dt.date(2026, 11, 5))
+            self.assertIn("✔", md.read_text(encoding="utf-8"))
+
+
 class MainTest(unittest.TestCase):
     def test_empty_env_uses_default_url_and_fails_when_all_errors(self):
         import os
