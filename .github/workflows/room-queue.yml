@@ -1,0 +1,68 @@
+name: 楽天ROOM 投稿キュー
+
+on:
+  schedule:
+    # GitHub の予約実行は遅れたり飛ばされたりするので、予備の時刻も入れておく。
+    # その日のリストが既にあれば、予備の実行は何もせず終わる。
+    - cron: "47 21 * * *" # 6:47 JST
+    - cron: "13 23 * * *" # 8:13 JST（予備）
+    - cron: "41 2 * * *"  # 11:41 JST（予備）
+  workflow_dispatch:
+    inputs:
+      regenerate:
+        description: "今日のリストがあっても、別の商品で作り直す"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: room-queue
+  cancel-in-progress: false
+
+jobs:
+  queue:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: 今日のリストが既にあるか確認
+        id: check
+        run: |
+          f="rakuten_room/output/$(TZ=Asia/Tokyo date +%F).md"
+          if [ -f "$f" ]; then
+            echo "今日のリスト（$f）は作成済みです"
+            if [ "${{ github.event_name }}" = "schedule" ]; then
+              echo "skip=true" >> "$GITHUB_OUTPUT"        # 予備の予約実行は何もしない
+            elif [ "${{ inputs.regenerate }}" != "true" ]; then
+              echo "keep=true" >> "$GITHUB_OUTPUT"        # 手動実行：リストはそのまま、ページだけ作る
+            fi
+          fi
+      - uses: actions/setup-python@v6
+        if: steps.check.outputs.skip != 'true'
+        with:
+          python-version: "3.12"
+      - name: テスト
+        if: steps.check.outputs.skip != 'true'
+        run: python -m unittest discover -s rakuten_room/tests
+      - name: キュー生成
+        if: steps.check.outputs.skip != 'true' && steps.check.outputs.keep != 'true'
+        env:
+          RAKUTEN_APP_ID: ${{ secrets.RAKUTEN_APP_ID }}
+          RAKUTEN_ACCESS_KEY: ${{ secrets.RAKUTEN_ACCESS_KEY }}
+          RAKUTEN_API_URL: ${{ vars.RAKUTEN_API_URL }}
+          # 楽天ウェブサービスの「許可されたWebサイト」に登録したドメインと合わせる
+          RAKUTEN_REFERER: ${{ vars.RAKUTEN_REFERER || 'https://miyamoto477-dev.github.io/' }}
+          TZ: Asia/Tokyo
+        run: python rakuten_room/room_queue.py
+      - name: ボタン付きページを作る
+        if: steps.check.outputs.skip != 'true'
+        run: python rakuten_room/page.py --out room  # /room/ に置くと GitHub Pages で公開される
+      - name: 結果をコミット
+        if: steps.check.outputs.skip != 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add rakuten_room/output rakuten_room/data room
+          git diff --cached --quiet || git commit -m "楽天ROOM 投稿キュー $(TZ=Asia/Tokyo date +%F)"
+          git push
