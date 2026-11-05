@@ -18,6 +18,7 @@ import csv
 import datetime as dt
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -111,18 +112,53 @@ def shorten(text: str, n: int) -> str:
     return text if len(text) <= n else text[: n - 1] + "…"
 
 
-def draft_text(item: dict, target: str, season_label: str | None) -> str:
-    point = shorten(item.get("catchcopy") or item.get("itemCaption") or "", 60)
-    lines = [
-        f"【こんな人に】{target}",
-        f"【推しポイント】{point or '（ここに使って良かった点を書く）'}",
-        f"【レビュー】★{float(item.get('reviewAverage') or 0):.2f}／{int(item.get('reviewCount') or 0):,}件",
-        "【注意】（サイズ・容量などの注意点を書く）",
-    ]
+# 商品名から外す宣伝文句（【】や＼／で囲まれた部分、送料・クーポンなど）
+_NAME_NOISE = re.compile(r"【[^】]*】|［[^］]*］|\[[^\]]*\]|＼[^／]*／|<[^>]*>|★|☆|◆|◇|■|□|●|○|♪|！|!")
+_NAME_WORDS = re.compile(r"(送料無料|ポイント\d*倍|最大\d+%OFF|\d+%OFF|クーポン\S*|SALE|セール|楽天\d*位|ランキング\S*|あす楽|翌日配送|即納|公式|正規品|限定)")
+# 特徴文として使わない文（注意書き・配送・型番など）
+_SKIP = re.compile(r"(http|※|注意|送料|配送|お届け|発送|返品|交換|キャンセル|クーポン|ポイント|JAN|型番|品番|メーカー|製造|販売|原産|生産国|保証|お問い合わせ|ご了承|ご注意|画像|モニター|ランキング|レビュー|楽天|商品番号)")
+# 薬機法・景表法の観点で言い切りになりやすい語を含む文は使わない
+_CLAIM = re.compile(r"(治|改善|効く|効果|効能|若返|痩せ|やせ|シミが|消える|美白|解消|予防|アンチエイジング|医師|医療|No\.?1|ナンバーワン|日本一|最高|最強|絶対|完全)")
+
+
+def clean_name(name: str) -> str:
+    name = _NAME_NOISE.sub(" ", name or "")
+    name = _NAME_WORDS.sub(" ", name)
+    return shorten(name.strip(" 　/|｜・-"), 40)
+
+
+def features(item: dict, n: int = 3) -> list[str]:
+    """商品説明文から、短くて言い切りのない特徴文を最大 n 個取り出す。"""
+    text = (item.get("itemCaption") or "") + "。" + (item.get("catchcopy") or "")
+    out: list[str] = []
+    for seg in re.split(r"[。\n\r！!？?]|<br\s*/?>|・|■|◆|●|★|☆|／|｜", text):
+        seg = " ".join(seg.split()).strip(" 　:：-－、,")
+        if not (8 <= len(seg) <= 40) or _SKIP.search(seg) or _CLAIM.search(seg):
+            continue
+        if seg.count(" ") >= 3:  # キーワードの羅列は文章にならないので除く
+            continue
+        if seg not in out:
+            out.append(seg)
+        if len(out) >= n:
+            break
+    return out
+
+
+def draft_text(item: dict, target: str = "", season_label: str | None = None) -> str:
+    """ROOMの商品紹介欄にそのまま貼れる、商品そのものの紹介文を作る。"""
+    lines = [clean_name(item.get("itemName", ""))]
+    feats = features(item)
+    if feats:
+        lines.append("")
+        lines += [f"✔ {f}" for f in feats]
+    else:
+        lines += ["", "✔ （使って良かった点・特徴を書く）"]
+    avg, cnt = float(item.get("reviewAverage") or 0), int(item.get("reviewCount") or 0)
+    lines += ["", f"レビュー★{avg:.2f}（{cnt:,}件）の人気アイテムです。"]
     if int(item.get("pointRate") or 1) > 1:
-        lines.append(f"【今】ポイント{item['pointRate']}倍")
+        lines.append(f"今ならポイント{item['pointRate']}倍。")
     elif season_label:
-        lines.append(f"【今】{season_label}におすすめ")
+        lines.append(f"{season_label}の時期にもぴったりです。")
     return "\n".join(lines)
 
 
