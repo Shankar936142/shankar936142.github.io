@@ -50,7 +50,29 @@ class QueueTest(unittest.TestCase):
         self.assertEqual(rq.normalize({"Item": {"a": 1}}), {"a": 1})
         t = rq.draft_text(item("x", point=5), "忙しい人", "大掃除")
         self.assertIn("ポイント5倍", t)
-        self.assertIn("★4.50／1,000件", t)
+        self.assertIn("★4.50（1,000件）", t)
+        self.assertNotIn("こんな人に", t)
+
+    def test_product_intro_text(self):
+        it = {"itemName": "【楽天1位】＼最大20%OFF／ iwaki 耐熱ガラス 保存容器 7点セット 送料無料",
+              "itemCaption": "電子レンジ・オーブンにそのまま使える耐熱ガラス製です。においや色が移りにくく、"
+                             "作り置きにぴったり。※画像はイメージです。シミが消える新習慣。"
+                             "送料無料でお届けします。中身が見えるので冷蔵庫の整理もしやすい",
+              "reviewAverage": 4.71, "reviewCount": 2446}
+        t = rq.draft_text(it)
+        first = t.splitlines()[0]
+        self.assertIn("iwaki 耐熱ガラス 保存容器 7点セット", first)
+        for w in ("楽天1位", "OFF", "送料無料", "【"):
+            self.assertNotIn(w, first)
+        self.assertIn("✔ においや色が移りにくく、作り置きにぴったり", t)
+        self.assertIn("✔ 中身が見えるので冷蔵庫の整理もしやすい", t)
+        self.assertNotIn("シミが消える", t)   # 言い切りの表現は使わない
+        self.assertNotIn("画像はイメージ", t)  # 注意書きは使わない
+        self.assertIn("レビュー★4.71（2,446件）", t)
+
+    def test_product_intro_fallback(self):
+        t = rq.draft_text({"itemName": "商品", "reviewAverage": 4.5, "reviewCount": 10})
+        self.assertIn("（使って良かった点・特徴を書く）", t)
 
     def test_write_outputs(self):
         q = rq.build_queue(CONFIG, lambda kw: [item(kw)], dt.date(2026, 12, 1), set())
